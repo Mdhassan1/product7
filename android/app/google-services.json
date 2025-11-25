@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "910105893179",
+    "project_id": "product7-afc43",
+    "storage_bucket": "product7-afc43.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:910105893179:android:490c6c0c7d926f5b96bf1e",
+        "android_client_info": {
+          "package_name": "tech.moonproduct.product7"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHXw9Lui7UZuf6Z-Q_mQvGoLd3yQ3EnwI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
