@@ -7,6 +7,10 @@ jobs:
   build-ios:
     name: 🎉 iOS Build
     runs-on: macos-latest
+    permissions:
+      contents: write    # This allows creating releases
+      actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v3
 
