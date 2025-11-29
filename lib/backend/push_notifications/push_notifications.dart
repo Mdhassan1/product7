@@ -1,15 +1,22 @@
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Top-level background handler (must be outside the class)
+/// Top-level background handler
+@pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  debugPrint('📥 Background message: ${message.messageId}');
-  debugPrint('Title: ${message.notification?.title}');
-  debugPrint('Body: ${message.notification?.body}');
+
+  debugPrint('📥 BACKGROUND MESSAGE: ${message.messageId}');
+  debugPrint('📥 Data: ${message.data}');
+  debugPrint('📥 Notification: ${message.notification}');
+
+  // Show local notification for background messages
+  await PushNotifications.showBackgroundNotification(message);
 }
 
 class PushNotifications {
@@ -17,167 +24,323 @@ class PushNotifications {
   static final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
-  // Android notification channel
-  static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
-    'high_importance_channel',
-    'High Importance Notifications',
-    description: 'Used for important notifications.',
+  // Create vibration pattern as a static final (not const)
+  static final Int64List _vibrationPattern =
+      Int64List.fromList([0, 1000, 500, 1000]);
+
+  // Create notification channel without const
+  static final AndroidNotificationChannel _channel = AndroidNotificationChannel(
+    'high_importance_channel', // id - MUST match AndroidManifest.xml
+    'High Importance Notifications', // title
+    description: 'Used for important product notifications.',
     importance: Importance.high,
+    playSound: true,
+    sound: const RawResourceAndroidNotificationSound('notification'),
+    enableVibration: true,
+    vibrationPattern: _vibrationPattern,
+    showBadge: true,
+    enableLights: true,
   );
 
-  static Future<void> init() async {
-    try {
-      print('🟡 [DEBUG 1] Starting PushNotifications.init...');
+  static bool _initialized = false;
 
-      // 1) Initialize local notifications
-      print('🟡 [DEBUG 2] Initializing local notifications...');
+  static Future<void> init() async {
+    if (_initialized) {
+      debugPrint('🔄 PushNotifications already initialized');
+      return;
+    }
+
+    try {
+      debugPrint('🟡 Starting PushNotifications.init...');
+
+      // 1. Initialize local notifications with proper settings
       const AndroidInitializationSettings androidInit =
           AndroidInitializationSettings('@mipmap/ic_launcher');
-      const DarwinInitializationSettings iosInit =
-          DarwinInitializationSettings();
-      const InitializationSettings initSettings =
-          InitializationSettings(android: androidInit, iOS: iosInit);
+
+      const DarwinInitializationSettings iosInit = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+        defaultPresentAlert: true,
+        defaultPresentBadge: true,
+        defaultPresentSound: true,
+      );
+
+      const InitializationSettings initSettings = InitializationSettings(
+        android: androidInit,
+        iOS: iosInit,
+      );
 
       await _localNotifications.initialize(
         initSettings,
-        onDidReceiveNotificationResponse: (resp) {
-          debugPrint('🔔 Local notification tapped: ${resp.payload}');
+        onDidReceiveNotificationResponse: (NotificationResponse response) {
+          debugPrint('🔔 Local notification tapped: ${response.payload}');
+          _handleNotificationTap(response.payload);
+        },
+        onDidReceiveBackgroundNotificationResponse:
+            (NotificationResponse response) {
+          debugPrint('🔔 Background notification tapped: ${response.payload}');
+          _handleNotificationTap(response.payload);
         },
       );
-      print('🟡 [DEBUG 3] Local notifications initialized successfully');
 
-      // 2) Create Android channel BEFORE requesting token
-      print('🟡 [DEBUG 4] Creating Android notification channel...');
+      // 2. Create Android channel (CRITICAL for Android 8+)
       await _localNotifications
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()
           ?.createNotificationChannel(_channel);
-      print('🟡 [DEBUG 5] Android notification channel created successfully');
 
-      // 3) Background handler
-      print('🟡 [DEBUG 6] Setting up background message handler...');
+      // 3. Set up background handler
       FirebaseMessaging.onBackgroundMessage(
           _firebaseMessagingBackgroundHandler);
-      print('🟡 [DEBUG 7] Background message handler set up');
 
-      // 4) Ask user permission (Android 13+ / iOS)
-      print('🟡 [DEBUG 8] Requesting notification permissions...');
-      final settings = await _messaging.requestPermission();
-      debugPrint('🔔 permission: ${settings.authorizationStatus}');
-      print(
-          '🟡 [DEBUG 9] Permission request completed: ${settings.authorizationStatus}');
+      // 4. Request permissions
+      final NotificationSettings settings = await _messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+        provisional: false,
+      );
 
-      // 5) Get FCM token - THIS IS WHERE IT CRASHES!
-      print('🟡 [DEBUG 10] Attempting to get FCM token...');
-      final token = await _messaging.getToken();
-      print('🟡 [DEBUG 11] FCM token obtained successfully: $token');
+      debugPrint('🔔 Permission status: ${settings.authorizationStatus}');
 
-      if (token != null) {
-        print('🟡 [DEBUG 12] Token is not null, proceeding to save...');
-        debugPrint('🟢 FCM token during init: $token');
+      // 5. Configure foreground display options
+      await _messaging.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
 
-        // Save token to Supabase if user is logged in
-        final supabase = Supabase.instance.client;
-        final userId = supabase.auth.currentUser?.id;
-        print('🟡 [DEBUG 13] User ID: $userId');
-
-        if (userId != null && token != null) {
-          try {
-            print('🟡 [DEBUG 14] Attempting to save token to Supabase...');
-            await supabase.from('profile').update({
-              'fcm_token': token,
-            }).eq('user_id', userId);
-            debugPrint('✅ FCM token saved during init for user: $userId');
-            print('🟡 [DEBUG 15] Token saved to Supabase successfully');
-          } catch (e) {
-            debugPrint('❌ Error saving FCM token during init: $e');
-            print('🟡 [DEBUG 16] Error saving to Supabase: $e');
-          }
-        } else {
-          print(
-              '🟡 [DEBUG 17] User ID is null or token is null, skipping Supabase save');
-        }
-      } else {
-        print('🟡 [DEBUG 18] FCM token is NULL');
+      // 6. Get initial message if app was opened from notification
+      final RemoteMessage? initialMessage =
+          await _messaging.getInitialMessage();
+      if (initialMessage != null) {
+        debugPrint(
+            '🚀 App opened from notification: ${initialMessage.messageId}');
+        _handleNotificationOpen(initialMessage);
       }
 
-      // 6) Refresh token listener
-      print('🟡 [DEBUG 19] Setting up token refresh listener...');
-      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-        debugPrint('♻️ Token refreshed: $newToken');
-        final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-        if (currentUserId != null && newToken != null) {
-          try {
-            await Supabase.instance.client.from('profile').update({
-              'fcm_token': newToken,
-            }).eq('user_id', currentUserId);
-            debugPrint(
-                '♻️ FCM token updated in Supabase for user: $currentUserId');
-          } catch (e) {
-            debugPrint('❌ Error updating refreshed token: $e');
-          }
+      // 7. Get initial FCM token
+      await _handleInitialToken();
+
+      // 8. Set up token refresh listener
+      _messaging.onTokenRefresh.listen((newToken) async {
+        debugPrint('♻️ Token refreshed: ${newToken.substring(0, 20)}...');
+        if (newToken.isNotEmpty) {
+          await _saveFcmToken(newToken);
         }
       });
-      print('🟡 [DEBUG 20] Token refresh listener set up');
 
-      // 7) Foreground message handler
-      print('🟡 [DEBUG 21] Setting up foreground message handler...');
+      // 9. Foreground message handler
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-        debugPrint('📩 Foreground message: ${message.messageId}');
-        debugPrint('Title: ${message.notification?.title}');
-        debugPrint('Body: ${message.notification?.body}');
-
-        final notification = message.notification;
-        if (notification != null) {
-          _localNotifications.show(
-            notification.hashCode,
-            notification.title,
-            notification.body,
-            NotificationDetails(
-              android: AndroidNotificationDetails(
-                _channel.id,
-                _channel.name,
-                channelDescription: _channel.description,
-                importance: Importance.high,
-                priority: Priority.high,
-                icon: '@mipmap/ic_launcher',
-              ),
-              iOS: const DarwinNotificationDetails(),
-            ),
-            payload: message.data.isNotEmpty ? message.data.toString() : null,
-          );
-        }
+        debugPrint('📩 FOREGROUND MESSAGE: ${message.messageId}');
+        debugPrint('📩 Data: ${message.data}');
+        debugPrint('📩 Notification: ${message.notification}');
+        _handleForegroundMessage(message);
       });
-      print('🟡 [DEBUG 22] Foreground message handler set up');
 
-      print('✅ PushNotifications.init completed successfully!');
+      // 10. Message opened handler
+      FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+        debugPrint('🔔 App opened from notification: ${message.messageId}');
+        _handleNotificationOpen(message);
+      });
+
+      _initialized = true;
+      debugPrint('✅ PushNotifications.init completed successfully!');
+
+      // Test notification
+      await _testLocalNotification();
     } catch (e, stackTrace) {
-      print('❌ PushNotifications.init CRASHED!');
-      print('🔴 ERROR: $e');
-      print('🔴 STACK TRACE: $stackTrace');
-
-      // Detailed error analysis
-      if (e.toString().contains('SERVICE_NOT_AVAILABLE')) {
-        print('🔴 ROOT CAUSE: FCM Service Not Available');
-        print('🔴 POSSIBLE FIXES:');
-        print('   1. Check Google Play Services on device');
-        print('   2. Verify Firebase configuration');
-        print('   3. Test on physical device instead of emulator');
-        print('   4. Check internet connection');
-      }
+      debugPrint('❌ PushNotifications.init error: $e');
+      debugPrint('Stack trace: $stackTrace');
+      _initialized = false;
     }
   }
 
-  // Additional debug method to test FCM separately
-  static Future<void> testFCMToken() async {
+  static Future<void> _testLocalNotification() async {
+    // Test if local notifications work
+    await Future.delayed(const Duration(seconds: 3));
+    await _showLocalNotification(
+      title: 'Product7 Ready',
+      body: 'Push notifications are working correctly!',
+      payload: 'test',
+    );
+    debugPrint('🧪 Test notification sent');
+  }
+
+  static Future<void> _handleInitialToken() async {
     try {
-      print('🟡 [FCM TEST] Starting FCM token test...');
+      String? token = await _messaging.getToken();
+      if (token != null && token.isNotEmpty) {
+        debugPrint('🟢 Initial FCM token: ${token.substring(0, 20)}...');
+        await _saveFcmToken(token);
+      } else {
+        debugPrint('⚠️ No initial FCM token received');
+      }
+    } catch (e) {
+      debugPrint('❌ Initial FCM token error: $e');
+      await Future.delayed(const Duration(seconds: 5));
+      await _handleInitialToken();
+    }
+  }
+
+  static Future<void> _saveFcmToken(String token) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final userId = supabase.auth.currentUser?.id;
+
+      if (userId != null && userId.isNotEmpty) {
+        await supabase.from('profile').update({
+          'fcm_token': token,
+        }).eq('user_id', userId);
+
+        debugPrint('✅ FCM token saved for user: $userId');
+      } else {
+        debugPrint('ℹ️ No user logged in, skipping FCM token save');
+      }
+    } catch (e, st) {
+      debugPrint('❌ Error saving FCM token: $e');
+      debugPrint('Stack trace: $st');
+    }
+  }
+
+  static void _handleForegroundMessage(RemoteMessage message) {
+    debugPrint('🎯 Handling foreground message');
+
+    // Check if message has notification payload
+    if (message.notification != null) {
+      final notification = message.notification!;
+      debugPrint('📢 Notification title: ${notification.title}');
+      debugPrint('📢 Notification body: ${notification.body}');
+
+      _showLocalNotification(
+        title: notification.title ?? 'Notification',
+        body: notification.body ?? '',
+        payload: message.data.toString(),
+      );
+    } else if (message.data.isNotEmpty) {
+      // Handle data-only messages
+      debugPrint('📊 Data-only message: ${message.data}');
+      _showLocalNotification(
+        title: message.data['title'] ?? 'Notification',
+        body: message.data['body'] ?? 'New notification',
+        payload: message.data.toString(),
+      );
+    }
+  }
+
+  static void _handleNotificationTap(String? payload) {
+    debugPrint('🔔 Notification tapped with payload: $payload');
+    // Handle navigation based on payload
+  }
+
+  static void _handleNotificationOpen(RemoteMessage message) {
+    debugPrint('🔔 App opened from notification: ${message.data}');
+    // Handle deep linking
+  }
+
+  static Future<void> showBackgroundNotification(RemoteMessage message) async {
+    debugPrint('🌙 Showing background notification');
+
+    if (message.notification != null) {
+      final notification = message.notification!;
+      await _showLocalNotification(
+        title: notification.title ?? 'Notification',
+        body: notification.body ?? '',
+        payload: message.data.toString(),
+      );
+    } else if (message.data.isNotEmpty) {
+      await _showLocalNotification(
+        title: message.data['title'] ?? 'Notification',
+        body: message.data['body'] ?? 'New notification',
+        payload: message.data.toString(),
+      );
+    }
+  }
+
+  static Future<void> _showLocalNotification({
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    try {
+      // Create vibration pattern for the notification
+      final vibrationPattern = Int64List.fromList([0, 1000, 500, 1000]);
+
+      final AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'high_importance_channel', // MUST match channel ID
+        'High Importance Notifications',
+        channelDescription: 'Used for important product notifications.',
+        importance: Importance.high,
+        priority: Priority.high,
+        ticker: 'ticker',
+        playSound: true,
+        sound: const RawResourceAndroidNotificationSound('notification'),
+        enableVibration: true,
+        vibrationPattern: vibrationPattern,
+        styleInformation: const DefaultStyleInformation(true, true),
+        autoCancel: true,
+        ongoing: false,
+        visibility: NotificationVisibility.public,
+      );
+
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        sound: 'default',
+      );
+
+      final NotificationDetails platformDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
+
+      await _localNotifications.show(
+        DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        title,
+        body,
+        platformDetails,
+        payload: payload,
+      );
+
+      debugPrint('✅ Local notification shown: $title');
+    } catch (e) {
+      debugPrint('❌ Error showing local notification: $e');
+    }
+  }
+
+  // Test FCM functionality
+  static Future<void> testFCM() async {
+    try {
       final token = await _messaging.getToken();
-      print('🟡 [FCM TEST] Token: $token');
-      print('✅ [FCM TEST] Completed successfully');
-    } catch (e, stackTrace) {
-      print('❌ [FCM TEST] Failed: $e');
-      print('🔴 [FCM TEST] Stack: $stackTrace');
+      debugPrint('🟡 FCM Test - Token: ${token?.substring(0, 20)}...');
+
+      final settings = await _messaging.getNotificationSettings();
+      debugPrint('🟡 FCM Test - Settings: $settings');
+
+      // Send test notification
+      await _showLocalNotification(
+        title: 'FCM Test',
+        body: 'If you see this, FCM is working!',
+        payload: 'test',
+      );
+
+      debugPrint('✅ FCM Test completed');
+    } catch (e) {
+      debugPrint('❌ FCM Test error: $e');
+    }
+  }
+
+  static Future<void> updateFcmToken() async {
+    try {
+      final token = await _messaging.getToken();
+      if (token != null) {
+        await _saveFcmToken(token);
+      }
+    } catch (e) {
+      debugPrint('❌ Manual FCM token update error: $e');
     }
   }
 }

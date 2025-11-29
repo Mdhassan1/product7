@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:provider/provider.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -13,66 +14,59 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
 import 'flutter_flow/flutter_flow_util.dart';
 
-Future<void> main() async {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // FlutterFlow dev environment
+  // Initialize environment
   final environmentValues = FFDevEnvironmentValues();
   await environmentValues.initialize();
 
-  // Init Firebase
-try {
-  await initFirebase();
-} catch (e, st) {
-  debugPrint('❌ Firebase init error: $e\n$st');
-}
-  // Init Supabase
-try {
-  await SupaFlow.initialize();
-} catch (e, st) {
-  debugPrint('❌ Supabase init error: $e\n$st');
-}
-  // Init Push Notifications
+  // Initialize Firebase with better error handling
+  bool firebaseInitialized = false;
+  try {
+    await initFirebase();
+    firebaseInitialized = true;
+    debugPrint('✅ Firebase initialized successfully');
+  } catch (e, st) {
+    debugPrint('❌ Firebase init error: $e');
+    debugPrint('Stack trace: $st');
+    // Continue without Firebase - don't crash the app
+  }
 
-try {
-  await PushNotifications.init();
-} catch (e, st) {
-  debugPrint('❌ PushNotifications init error: $e\n$st');
-}
-  // FlutterFlow theme
+  // Initialize Supabase
+  try {
+    await SupaFlow.initialize();
+    debugPrint('✅ Supabase initialized successfully');
+  } catch (e, st) {
+    debugPrint('❌ Supabase init error: $e');
+    debugPrint('Stack trace: $st');
+    rethrow; // Supabase is critical, rethrow
+  }
+
+  // Initialize Push Notifications only if Firebase was initialized
+  if (firebaseInitialized) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await PushNotifications.init();
+      } catch (e) {
+        debugPrint('❌ PushNotifications init error: $e');
+      }
+    });
+  } else {
+    debugPrint('⚠️ Skipping PushNotifications init - Firebase not available');
+  }
+
+  // Initialize theme
   await FlutterFlowTheme.initialize();
 
-  // App State
+  // Initialize app state
   final appState = FFAppState();
   await appState.initializePersistedState();
 
-  // --- CORRECTED FCM token logic ---
-  final supabaseClient = Supabase.instance.client;
-
-  // Listen to auth state changes
-  supabaseClient.auth.onAuthStateChange.listen((event) async {
-    debugPrint('🔄 Auth state changed: ${event.event}');
-    
-    final user = supabaseClient.auth.currentUser;
-    if (user != null && event.event == AuthChangeEvent.signedIn) {
-      debugPrint('👤 User signed in: ${user.id}');
-      
-      // Wait a bit for user to be fully initialized
-      await Future.delayed(const Duration(seconds: 2));
-      
-      await _updateFcmToken(user.id);
-    }
-  });
-
-  // Also check for existing user on app start
-  WidgetsBinding.instance.addPostFrameCallback((_) async {
-    final initialUser = supabaseClient.auth.currentUser;
-    if (initialUser != null) {
-      debugPrint('🔍 Found existing user: ${initialUser.id}');
-      await Future.delayed(const Duration(seconds: 3));
-      await _updateFcmToken(initialUser.id);
-    }
-  });
+  // Set up FCM token management only if Firebase is available
+  if (firebaseInitialized) {
+    _setupFcmTokenManagement();
+  }
 
   runApp(
     ChangeNotifierProvider(
@@ -82,52 +76,106 @@ try {
   );
 }
 
+void _setupFcmTokenManagement() {
+  final supabaseClient = Supabase.instance.client;
 
-void testFCM() async {
-  try {
-    print('🟡 Testing FCM directly...');
-    FirebaseMessaging messaging = FirebaseMessaging.instance;
-    String? token = await messaging.getToken();
-    print('✅ FCM Token: $token');
-  } catch (e) {
-    print('❌ FCM Test Error: $e');
+  // Listen to auth state changes
+  supabaseClient.auth.onAuthStateChange.listen((event) async {
+    debugPrint('🔄 Auth state changed: ${event.event}');
+
+    final user = supabaseClient.auth.currentUser;
+    if (user != null && event.event == AuthChangeEvent.signedIn) {
+      debugPrint('👤 User signed in: ${user.id}');
+
+      // Wait a bit then update FCM token with retry logic
+      await _updateFcmTokenWithRetry(user.id);
+    } else if (event.event == AuthChangeEvent.signedOut) {
+      debugPrint('👤 User signed out');
+      // Optionally: Remove FCM token from server when user signs out
+    }
+  });
+
+  // Check for existing user on app start
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    final initialUser = supabaseClient.auth.currentUser;
+    if (initialUser != null) {
+      debugPrint('🔍 Found existing user: ${initialUser.id}');
+      await Future.delayed(const Duration(seconds: 3));
+      await _updateFcmTokenWithRetry(initialUser.id);
+    }
+  });
+}
+
+Future<void> _updateFcmTokenWithRetry(String userId,
+    {int maxRetries = 3}) async {
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      debugPrint(
+          '🔄 Attempting to update FCM token (attempt $attempt/$maxRetries)...');
+      await _updateFcmToken(userId);
+      return; // Success, exit retry loop
+    } catch (e) {
+      debugPrint('❌ FCM token update attempt $attempt failed: $e');
+
+      if (attempt == maxRetries) {
+        debugPrint('💥 All FCM token update attempts failed');
+        return;
+      }
+
+      // Exponential backoff
+      final delay = Duration(seconds: attempt * 2);
+      debugPrint('⏳ Retrying in ${delay.inSeconds} seconds...');
+      await Future.delayed(delay);
+    }
   }
 }
 
-// Call this in main() after Firebase.initializeApp()
-
-
-// Helper function to update FCM token
 Future<void> _updateFcmToken(String userId) async {
   try {
-    final supabaseClient = Supabase.instance.client;
-    
+    // Check if Firebase Messaging is available
+    try {
+      await FirebaseMessaging.instance.getToken();
+    } catch (e) {
+      debugPrint('⚠️ Firebase Messaging not available: $e');
+      return;
+    }
+
     // Get FCM token
     final fcmToken = await FirebaseMessaging.instance.getToken();
-    debugPrint('🟢 FCM Token retrieved: $fcmToken');
 
     if (fcmToken != null && fcmToken.isNotEmpty) {
-      // Update the profile table
-      final response = await supabaseClient
-          .from('profile')
-          .update({'fcm_token': fcmToken})
-          .eq('user_id', userId);
+      debugPrint('🟢 FCM Token retrieved: ${fcmToken.substring(0, 20)}...');
 
-      debugPrint('✅ FCM token saved to profile table for user: $userId');
-      
-      // Verify the update
-      final verify = await supabaseClient
-          .from('profile')
-          .select('fcm_token')
-          .eq('user_id', userId)
-          .single();
-          
-      debugPrint('🔍 Verified FCM token in DB: ${verify['fcm_token']}');
+      // Update profile table
+      final supabaseClient = Supabase.instance.client;
+      await supabaseClient.from('profile').update({
+        'fcm_token': fcmToken,
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('user_id', userId);
+
+      debugPrint('✅ FCM token saved for user: $userId');
+
+      // Optional: Verify the update (remove if causing issues)
+      try {
+        final verify = await supabaseClient
+            .from('profile')
+            .select('fcm_token')
+            .eq('user_id', userId)
+            .single();
+
+        final storedToken = verify['fcm_token'] as String?;
+        if (storedToken == fcmToken) {
+          debugPrint('✅ FCM token verified in database');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Could not verify FCM token: $e');
+      }
     } else {
       debugPrint('❌ FCM token is null or empty');
     }
   } catch (e, st) {
-    debugPrint('❌ Error updating FCM token: $e\n$st');
+    debugPrint('❌ Error updating FCM token: $e');
+    debugPrint('Stack trace: $st');
   }
 }
 
@@ -146,6 +194,8 @@ class MyAppScrollBehavior extends MaterialScrollBehavior {
   Set<PointerDeviceKind> get dragDevices => {
         PointerDeviceKind.touch,
         PointerDeviceKind.mouse,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.unknown,
       };
 }
 
@@ -167,14 +217,37 @@ class _MyAppState extends State<MyApp> {
     userStream = product7SupabaseUserStream()
       ..listen((user) {
         _appStateNotifier.update(user);
+        debugPrint('👤 User stream updated: ${user.uid}');
       });
 
     jwtTokenStream.listen((_) {});
-    Future.delayed(const Duration(milliseconds: 1000),
-        () => _appStateNotifier.stopShowingSplashImage());
+
+    // Stop splash screen after delay
+    Future.delayed(
+      const Duration(milliseconds: 1500),
+      () => _appStateNotifier.stopShowingSplashImage(),
+    );
+
+    // Handle app lifecycle for FCM token updates
+    _setupAppLifecycleListener();
   }
 
-  // Add getRoute / getRouteStack to avoid flutter_flow_util errors
+  void _setupAppLifecycleListener() {
+    WidgetsBinding.instance.addObserver(
+      LifecycleEventHandler(
+        resumeCallBack: () async {
+          debugPrint('🔄 App resumed');
+          // Update FCM token when app comes to foreground
+          final user = Supabase.instance.client.auth.currentUser;
+          if (user != null) {
+            await Future.delayed(const Duration(seconds: 1));
+            await _updateFcmTokenWithRetry(user.id, maxRetries: 2);
+          }
+        },
+      ),
+    );
+  }
+
   String getRoute([RouteMatch? routeMatch]) {
     final lastMatch =
         routeMatch ?? _router.routerDelegate.currentConfiguration.last;
@@ -217,5 +290,35 @@ class _MyAppState extends State<MyApp> {
       themeMode: _themeMode,
       routerConfig: _router,
     );
+  }
+}
+
+// App lifecycle handler
+class LifecycleEventHandler extends WidgetsBindingObserver {
+  final Future<void> Function()? resumeCallBack;
+  final Future<void> Function()? suspendingCallBack;
+
+  LifecycleEventHandler({
+    this.resumeCallBack,
+    this.suspendingCallBack,
+  });
+
+  @override
+  Future<void> didChangeAppLifecycleState(AppLifecycleState state) async {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        if (resumeCallBack != null) {
+          await resumeCallBack!();
+        }
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        if (suspendingCallBack != null) {
+          await suspendingCallBack!();
+        }
+        break;
+    }
   }
 }

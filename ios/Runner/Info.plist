@@ -17,6 +17,19 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 
+	<key>UIBackgroundModes</key>
+    <array>
+        <string>remote-notification</string>
+    </array>
+    
+    <key>NSUserNotificationsUsageDescription</key>
+    <string>This app needs notifications to keep you updated with important information.</string>
+    
+    <!-- For iOS 12+ -->
+    <key>FirebaseAppDelegateProxyEnabled</key>
+    <false/>
+    
+
 	<key>CFBundleShortVersionString</key>
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
