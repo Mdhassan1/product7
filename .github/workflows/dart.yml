@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  # keep minimal: actions read is fine; release creation done with PAT below
+   contents: write # keep minimal: actions read is fine; release creation done with PAT below
   actions: read
   checks: read
 
@@ -16,8 +16,8 @@ jobs:
     env:
       # Path to output IPA
       IPA_PATH: build/ios/iphoneos/FlutterIpaExport.ipa
-      TAG_NAME: v1.0
-      RELEASE_NAME: v1.0
+      TAG_NAME: v2.0
+      RELEASE_NAME: v2.0
 
     steps:
       - name: Checkout
