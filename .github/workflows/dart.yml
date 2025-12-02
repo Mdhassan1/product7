@@ -3,40 +3,81 @@ name: iOS-ipa-build
 on:
   workflow_dispatch:
 
+permissions:
+  # keep minimal: actions read is fine; release creation done with PAT below
+  actions: read
+  checks: read
+
 jobs:
   build-ios:
-    name: 🎉 iOS Build
+    name: 🎉 iOS Build & Release
     runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v3
 
-      - uses: subosito/flutter-action@v2
+    env:
+      # Path to output IPA
+      IPA_PATH: build/ios/iphoneos/FlutterIpaExport.ipa
+      TAG_NAME: v1.0
+      RELEASE_NAME: v1.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           architecture: x64
-      - run: flutter pub get
-      
 
-      - run: pod repo update
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: CocoaPods repo update
+        run: pod repo update
         working-directory: ios
 
-      - run: flutter build ios --release --no-codesign
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
 
-      - run: mkdir Payload
-        working-directory: build/ios/iphoneos
+      - name: Prepare Payload folder
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          mv Runner.app Payload/
 
-      - run: mv Runner.app/ Payload
-        working-directory: build/ios/iphoneos
+      - name: Create IPA zip
+        run: |
+          cd build/ios/iphoneos
+          zip -qq -r -9 FlutterIpaExport.ipa Payload
 
-      - name: Zip output
-        run: zip -qq -r -9 FlutterIpaExport.ipa Payload
-        working-directory: build/ios/iphoneos
+      - name: Verify IPA exists (for logs)
+        run: |
+          echo "IPA path: $IPA_PATH"
+          ls -lh $IPA_PATH || (echo "IPA not found" && exit 1)
 
-      - name: Upload binaries to release
+      # -----------------------
+      # Create release using PAT
+      # -----------------------
+      - name: Create GitHub Release (using PAT)
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_PAT }}   # <-- use PAT here
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          release_name: ${{ env.RELEASE_NAME }}
+          body: "This is first release"
+          draft: false
+          prerelease: false
+
+      # -----------------------
+      # Upload IPA using PAT
+      # -----------------------
+      - name: Upload IPA to Release (using PAT)
         uses: svenstaro/upload-release-action@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/ios/iphoneos/FlutterIpaExport.ipa
-          tag: v1.0
+          repo_token: ${{ secrets.RELEASES_PAT }}     # <-- PAT again
+          file: ${{ env.IPA_PATH }}
+          asset_name: FlutterIpaExport.ipa
+          tag: ${{ env.TAG_NAME }}
           overwrite: true
-          body: "This is first release"
