@@ -3,10 +3,10 @@ name: iOS-ipa-build
 on:
   workflow_dispatch:
 
-permissions:
-   contents: write # keep minimal: actions read is fine; release creation done with PAT below
-  actions: read
-  checks: read
+#permissions:
+#   contents: write # keep minimal: actions read is fine; release creation done with PAT below
+#  actions: read
+#  checks: read
 
 jobs:
   build-ios:
